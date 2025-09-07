@@ -3,38 +3,8 @@ name: Custom Build
 on:
   workflow_dispatch:
     inputs:
-      cn:
-        description: 'Include Chinese version (add "--cn" to build args)'
-        required: false
-        default: false
-        type: boolean
-      normal:
-        description: 'Remove opinionated features (add "--normal" to build args)'
-        required: false
-        default: false
-        type: boolean
-      no_liga:
-        description: 'Remove ligatures (add "--no-liga" to build args)'
-        required: false
-        default: false
-        type: boolean
-      no_hinted:
-        description: 'Build unhinted font (add "--no-hinted" to build args)'
-        required: false
-        default: false
-        type: boolean
-      nf_mono:
-        description: 'Fixed Nerd Font icon width (add "--nf-mono" to build args)'
-        required: false
-        default: false
-        type: boolean
-      feat:
-        description: 'Enable features, split by `,`, e.g. "cv01,ss02" (add "--feat feat1,feat2" to build args)'
-        required: false
-        default: ''
-        type: string
       build_args:
-        description: 'Other args for build.py'
+        description: 'Extra args for build.py (optional)'
         required: false
         default: ''
         type: string
@@ -61,44 +31,38 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-          # https://github.com/ryanoasis/nerd-fonts/blob/b3c1b0cf424ac32915cf4fd822c3938d4a815566/.github/workflows/release.yml#L144-L166
-          if [[ "${{ github.event.inputs.build_args }}" == *"--font-patcher"* ]] || python build.py --dry | jq -e '.nerd_font.use_font_patcher == true' >/dev/null; then
-            sudo apt update -y -q
-            sudo apt install software-properties-common -y -q
-            sudo apt install python3-fontforge -y -q
-            sudo apt install fuse -y -q
-
-            curl -L "https://github.com/fontforge/fontforge/releases/download/20230101/FontForge-2023-01-01-a1dad3e-x86_64.AppImage" --output fontforge
-            chmod u+x fontforge
-            echo Try appimage
-            ./fontforge --version
-            export PATH=`pwd`:$PATH
-            echo "PATH=$PATH" >> $GITHUB_ENV
-            echo Try appimage with path
-            fontforge --version
-          fi
-
-      - name: Run custom script
+      - name: Run custom script (auto-config)
         run: |
+          config_file="config.json"
           build_args="--archive"
-          if [ "${{ github.event.inputs.cn }}" == "true" ]; then
+
+          # Include Chinese build if enabled
+          if jq -e '.cn.enable' "$config_file" >/dev/null; then
             build_args="$build_args --cn"
           fi
-          if [ "${{ github.event.inputs.normal }}" == "true" ]; then
-            build_args="$build_args --normal"
-          fi
-          if [ "${{ github.event.inputs.no_liga }}" == "true" ]; then
+
+          # Disable ligatures if false
+          if jq -e '.enable_ligature' "$config_file" | grep -q false; then
             build_args="$build_args --no-liga"
           fi
-          if [ "${{ github.event.inputs.no_hinted }}" == "true" ]; then
+
+          # Disable hinting if false
+          if jq -e '.use_hinted' "$config_file" | grep -q false; then
             build_args="$build_args --no-hinted"
           fi
-          if [ "${{ github.event.inputs.nf_mono }}" == "true" ]; then
+
+          # Enable Nerd Font mono if true
+          if jq -e '.nerd_font.mono' "$config_file" | grep -q true; then
             build_args="$build_args --nf-mono"
           fi
-          if [ -n "${{ github.event.inputs.feat }}" ]; then
-            build_args="$build_args --feat ${{ github.event.inputs.feat }}"
+
+          # Extract enabled features
+          enabled_feats=$(jq -r '.feature_freeze | to_entries | map(select(.value == "enable")) | map(.key) | join(",")' "$config_file")
+          if [ -n "$enabled_feats" ]; then
+            build_args="$build_args --feat $enabled_feats"
           fi
+
+          # Append any manual build args
           if [ -n "${{ github.event.inputs.build_args }}" ]; then
             build_args="$build_args ${{ github.event.inputs.build_args }}"
           fi
@@ -106,21 +70,23 @@ jobs:
           echo "BUILD_ARGS=$build_args" >> $GITHUB_ENV
           python build.py $build_args
         continue-on-error: true
+
       - id: check_issue
         name: Check issue feature file
         run: |
-          if [ -f fonts/issue.fea ]
-          then
+          if [ -f fonts/issue.fea ]; then
             echo 'exists=true' >> $GITHUB_OUTPUT
           else
             echo 'exists=false' >> $GITHUB_OUTPUT
           fi
+
       - name: Upload issue artifact
         if: ${{ steps.check_issue.outputs.exists == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: issue-fea-file
           path: fonts/issue.fea
+
       - name: Create release
         run: |
           if [ ! -d "fonts/archive" ]; then
